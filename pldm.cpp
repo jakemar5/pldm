@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
   convert_parameter_units();
   std::ofstream outfile;
   outfile.open("populations.out");
-  outfile << "#Time(s)\tPopulation\n";
+  outfile << "#Time(au)\tPopulation\n";
 
   std :: cout << "Hamiltonian:\n";
   std :: cout << hamiltonian[0][0] << '\t' << hamiltonian[0][1] << '\n';
