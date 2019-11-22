@@ -11,12 +11,12 @@
 // Input Params
 // TODO: Put input params into .in file and read in?
 
-int ntraj = 2;                  // Number of total trajectories
+int ntraj = 10000;                  // Number of total trajectories
 int init_state = 0;             // Initial states of forward and backward propogators.
 int init_statet = 0;
 const int nsteps = 1000;              // Number of SLOW steps to run trajectory
-const double nlittle = 100;              // Number of FAST steps
-const int nbath = 2;                  // Number of baths
+const int nlittle = 10;              // Number of FAST steps
+const int nbath = 1;                  // Number of baths
 const int nosc = 1000;                // Number of oscillators in harmonic bath
 const int nstate = 2;           // Number of system states
 const int ncopies = 2;          // How many copies of the trajectories to run (1 forward and 1 backward, for example)
@@ -26,14 +26,14 @@ double lambda = 25.;            // Reorganization energy
 double cutoff_freq = 105.;      // Cutoff frequency for spectral density
 double temperature = 77.;       // Temp. in Kelvin
 double runtime = 1000.;         // Total time to run trajectory over in fs
-double hamiltonian[2][2] = {{100., 50.}, {50., 0.0}};  // Where the system is coupled to the bath.
+double h_sys[2][2] = {{100., 50.}, {50., 0.0}};  // Where the system is coupled to the bath.
 
 
 // CONSTANTS
 const double PI = 3.14159265358979323;
 const double BOLTZMANN = 1.38064852e-23;
 const double LIGHT = 3.0e10;      // units cm/s
-std::complex<double> eye = sqrt( -1.0 );
+std::complex<double> eye = sqrt((std::complex<double>) -1.0);
 
 double beta = 1./temperature;   // Conversion to atomic energy accounts for Boltzmann constant.
 double dt = runtime/nsteps;
@@ -45,10 +45,10 @@ double fs2AtomicTime = 41.341374575751;
 
 // FUNCTION PROTOTYPES
 void convert_parameter_units();
-void get_mapping_init_positions_and_momenta(double q[ncopies][nstate], double p[ncopies][nstate], int &num_procs);
+void get_mapping_init_positions_and_momenta(double q[ncopies][nstate], double p[ncopies][nstate], int &num_procs, std::complex<double> initial_weight);
 void get_bath_information(double omega[], double c[]);
 void get_bath_initial_conditions(double q_bath[nbath][nosc], double p_bath[nbath][nosc], double omega[], double &beta);
-void propagate(double q_map[ncopies][nstate], double p_map[ncopies][nstate], double &dt, int system_copy);
+void propagate(double q_map[ncopies][nstate], double p_map[ncopies][nstate], double hamiltonian[nstate][nstate], double &dt, int system_copy);
 double uniform_random_number(double = 0., double = 1.);
 double gaussian_random_number(double mean, double sigma);
 
@@ -56,13 +56,6 @@ double gaussian_random_number(double mean, double sigma);
 
 int main(int argc, char *argv[]) {
   convert_parameter_units();
-  std::ofstream outfile;
-  outfile.open("populations.out");
-  outfile << "#Time(s)\tPopulation\n";
-
-  std :: cout << "Hamiltonian:\n";
-  std :: cout << hamiltonian[0][0] << '\t' << hamiltonian[0][1] << '\n';
-  std :: cout << hamiltonian[1][0] << '\t' << hamiltonian[1][1] << '\n';
 
   MPI_Init(0, 0); // Initialize MPI Processes
   int num_procs, my_pe;
@@ -81,52 +74,96 @@ int main(int argc, char *argv[]) {
   double positions_map[ncopies][nstate];
   double momenta_map[ncopies][nstate];
 
-  double dt_little = dt/nlittle;
+  double dt_little = dt/ static_cast<double>(nlittle);
   double force;
+  double hamiltonian[2][2];
+  std::complex<double> density_matrix[nstate][nstate][nsteps+1];
+  std::complex<double> initial_weight;
 
   // Each processor to run n-trajectories
   for (int itraj=0; itraj<ntraj/num_procs; itraj++) {
       // Get initial conditions for each trajectory
 
-      get_mapping_init_positions_and_momenta(positions_map, momenta_map, num_procs);
+      get_mapping_init_positions_and_momenta(positions_map, momenta_map, num_procs, initial_weight);
       get_bath_initial_conditions(positions_bath, momenta_bath, omega, beta);
 
-      for (int istep = 0; istep < nsteps; istep++) {        // TODO: Do I need this loop over baths?
+      for (int istate=0; istate<nstate; istate++) {
+          for (int jstate=0; jstate<nstate; jstate++) {
+              density_matrix[istate][jstate][0] += 0.5*(positions_map[0][istate] + eye * momenta_map[0][istate])*(positions_map[1][jstate] - eye * momenta_map[1][jstate]) * initial_weight /
+                      static_cast<double>(ntraj);
+          }
+      }
+//      std::cout << "pos " << positions_map[0][0] << "\tmom " << momenta_map[0][0] << "i " << eye.real() << '\t' << eye.imag() << "\n";
+
+      for (int iosc = 0; iosc < nosc; iosc++) {
+          // Loop over electron steps
+          force = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) -
+                                           pow(positions_map[0][1], 2) -
+                                           pow(momenta_map[0][1], 2) + pow(positions_map[1][0], 2) +
+                                           pow(momenta_map[1][0], 2) - pow(positions_map[1][1], 2) -
+                                           pow(momenta_map[1][1], 2)) +
+                                           (2 * pow(omega[0], 2) * positions_bath[0][0]));
+      }
+
+      for (int istep = 0; istep < nsteps; istep++) {
           // Loop over nuclear steps
-          force = 0.5 * (0.5 * c[0] *
-                         (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) - pow(positions_map[0][1], 2) -
-                          pow(momenta_map[0][1], 2)
-                          + pow(positions_map[1][0], 2) + pow(momenta_map[1][0], 2) - pow(positions_map[1][1], 2) -
-                          pow(momenta_map[1][1], 2))
-                         + (2 * pow(omega[0], 2) * positions_bath[0][0]));
 
-          for (int ibath = 0; ibath < nbath; ibath++) {
-              for (int iosc = 0; iosc < nosc; iosc++) {
-                  // Loop over electron steps
+          for (int iosc = 0; iosc < nosc; iosc++) {
+              momenta_bath[0][iosc] += 0.5 * force * dt;
+              positions_bath[0][iosc] += momenta_bath[0][iosc] * dt;
+          }
 
-                  propagate(positions_map, momenta_map, dt_little, 0);
-                  propagate(positions_map, momenta_map, dt_little, 1);
-
-                  // Advance each oscillator
-
-                  momenta_bath[ibath][iosc] += 0.5 * force * dt;
-                  positions_bath[ibath][iosc] += momenta_bath[ibath][iosc] * dt;
-
-                  force = 0.5 * (0.5 * c[iosc] * (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) -
-                                                  pow(positions_map[0][1], 2) - pow(momenta_map[0][1], 2)
-                                                  + pow(positions_map[1][0], 2) + pow(momenta_map[1][0], 2) -
-                                                  pow(positions_map[1][1], 2) - pow(momenta_map[1][1], 2))
-                                 + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
-
-                  momenta_bath[ibath][iosc] += 0.5 * force * dt;
-
-                  // Write populations to file?     pop_k = |k><k| = a_k^\dagger * a_k = 0.5 * (q_k^2 + p_k^2 - 1)
-                  // Do we already have this as momenta_map and positions_map? Do this step inside of 'propagate' function?
-                  // Average forward and backward propagators?
+          for (int i=0; i<nstate; i++) {
+              for (int j=0; j<nstate; j++) {
+                  hamiltonian[i][j] = h_sys[i][j];
               }
+          }
+
+          for (int iosc=0; iosc < nosc; iosc++) {
+              hamiltonian[0][0] += c[iosc] * positions_bath[0][iosc];
+              hamiltonian[1][1] += -c[iosc] * positions_bath[0][iosc];
+          }
+
+          propagate(positions_map, momenta_map, hamiltonian, dt_little, 0);
+          propagate(positions_map, momenta_map, hamiltonian, dt_little, 1);
+
+          for (int istate=0; istate<nstate; istate++) {
+              for (int jstate=0; jstate<nstate; jstate++) {
+                  density_matrix[istate][jstate][istep+1] += 0.5*(positions_map[0][istate] + eye * momenta_map[0][istate])*(positions_map[1][jstate] - eye * momenta_map[1][jstate]) * initial_weight /
+                          static_cast<double>(ntraj);
+              }
+          }
+
+
+          for (int iosc = 0; iosc < nosc; iosc++) {
+              force = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) -
+                                              pow(positions_map[0][1], 2) - pow(momenta_map[0][1], 2)
+                                              + pow(positions_map[1][0], 2) + pow(momenta_map[1][0], 2) -
+                                              pow(positions_map[1][1], 2) - pow(momenta_map[1][1], 2))
+                             + (2 * pow(omega[iosc], 2) * positions_bath[0][iosc]));
+
+              momenta_bath[0][iosc] += 0.5 * force * dt;
           }
       }
   }
+
+
+  std::ofstream outfile;
+  std::stringstream filename;
+
+  for (int istate=0; istate<nstate; istate++) {
+      for (int jstate=0; jstate<nstate; jstate++) {
+          filename << "pldm." << istate+1 << "-" << jstate+1;
+          outfile.open(filename.str());
+
+          for (int itime=0; itime<(nsteps+1); itime++) {
+              outfile << itime*dt/fs2AtomicTime << '\t' << density_matrix[istate][jstate][itime].real() << '\t' << density_matrix[istate][jstate][itime].imag() << '\n';
+          }
+          filename.str("");
+          outfile.close();
+      }
+  }
+
 
   MPI_Finalize();
   outfile.close();
@@ -134,7 +171,7 @@ int main(int argc, char *argv[]) {
 }
 
 
-void get_mapping_init_positions_and_momenta(double q[ncopies][nstate], double p[ncopies][nstate], int &num_procs) {
+void get_mapping_init_positions_and_momenta(double q[ncopies][nstate], double p[ncopies][nstate], int &num_procs, std::complex<double> initial_weight) {
   // Sample init. q's and p's to start trajectories.
 
   for (int icopy=0; icopy<ncopies; icopy++) {
@@ -145,7 +182,7 @@ void get_mapping_init_positions_and_momenta(double q[ncopies][nstate], double p[
           //std::cout << "q(" << icopy << "," << istate << ") = " << q[icopy][istate] << "\tp(" << icopy << "," << istate << ") = " << p[icopy][istate] << '\n';
       }
   }
-  std::complex<double> initial_weight = 0.5*(q[0][init_state] - eye * p[0][init_state])*(q[1][init_statet] + eye * p[1][init_statet]); // TODO: Where does this weight get applied?
+  initial_weight = 0.5*(q[0][init_state] - eye * p[0][init_state])*(q[1][init_statet] + eye * p[1][init_statet]);
   return;
 }
 
@@ -177,7 +214,7 @@ void get_bath_initial_conditions(double q_bath[nbath][nosc], double p_bath[nbath
     }
 }
 
-void propagate(double q_map[ncopies][nstate], double p_map[ncopies][nstate], double &dt, int system_copy) {
+void propagate(double q_map[ncopies][nstate], double p_map[ncopies][nstate], double hamiltonian[nstate][nstate], double &dt, int system_copy) {
     // Propagate electronic DOFs over short time step.
 
     double dxdt[nstate], dpdt[nstate];
@@ -228,7 +265,7 @@ void convert_parameter_units() {
     dt *= fs2AtomicTime;                        // Time step for propagation.
     for (int i=0; i<2; i++) {
         for (int j=0; j<2; j++) {
-            hamiltonian[i][j] *= wavenumber2AtomicAngFreq;
+            h_sys[i][j] *= wavenumber2AtomicAngFreq;
         }
     }
 
