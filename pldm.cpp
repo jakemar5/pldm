@@ -4,6 +4,7 @@
 #include <string>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 #include <vector>
 #include <fstream>
 #include <sstream>
@@ -11,22 +12,25 @@
 // Input Params
 // TODO: Put input params into .in file and read in?
 
-int ntraj = 2000;                  // Number of total trajectories
-int init_state = 0;             // Initial states of forward and backward propogators.
+// ~10,000 steps / minute of computation time using 4 processors
+
+int ntraj = 10000;                      // Number of total trajectories
+int init_state = 0;                     // Initial states of forward and backward propogators.
 int init_statet = 0;
-const int nsteps = 1000;              // Number of SLOW steps to run trajectory
-const int nlittle = 20;              // Number of FAST steps
-const int nbath = 2;                  // Number of baths
-const int nosc = 1000;                // Number of oscillators in harmonic bath
-const int nstate = 2;           // Number of system states
-const int ncopies = 2;          // How many copies of the trajectories to run (1 forward and 1 backward, for example)
-double epsilon = 100.;          // Spin energy gap in wavenumbers
-double delta = 100.;            // Coupling between spin states
-double lambda = 20.;            // Reorganization energy
-double cutoff_freq = 53.08;      // Cutoff frequency for spectral density
-double temperature = 300.;       // Temp. in Kelvin
-double runtime = 1000.;         // Total time to run trajectory over in fs
-double h_sys[2][2] = {{100., 100.}, {100., 0.0}};  // Where the system is coupled to the bath.
+const int nsteps = 1000;                // Number of SLOW steps to run trajectory
+const int nlittle = 10;                 // Number of FAST steps
+const int nbath = 2;                    // Number of baths
+const int nosc = 100;                   // Number of oscillators in harmonic bath
+const int nstate = 2;                   // Number of system states
+const int ncopies = 2;                  // How many copies of the trajectories to run (1 forward and 1 backward, for example)
+double epsilon = 100.;                  // Spin energy gap in wavenumbers
+double delta = 100.;                    // Coupling between spin states
+double lambda = 20.;                    // Reorganization energy
+double cutoff_freq = 53.08;             // Cutoff frequency for spectral density
+double temperature = 300.;              // Temp. in Kelvin
+double runtime = 1000.;                 // Total time to run trajectory over in fs
+double h_sys[2][2] = {{100., 100.},
+                      {100., 0.0}};     // Where the system is coupled to the bath.
 
 
 // CONSTANTS
@@ -76,7 +80,7 @@ int main(int argc, char *argv[]) {
 
   double dt_little = dt/ static_cast<double>(nlittle);
 
-  double force[nosc];
+  double force[nbath][nosc];
   double hamiltonian[2][2];
   std::complex<double> density_matrix[nstate][nstate][nsteps+1];
   std::complex<double> initial_weight;
@@ -84,97 +88,125 @@ int main(int argc, char *argv[]) {
   // Each processor to run n-trajectories
   for (int itraj=0; itraj<ntraj/num_procs; itraj++) {
       // Get initial conditions for each trajectory
-    for (int ibath=0; ibath<nbath; ibath++) {
+
       get_mapping_init_positions_and_momenta(positions_map, momenta_map, num_procs, initial_weight);
       get_bath_initial_conditions(positions_bath, momenta_bath, omega, beta);
-
       for (int istate=0; istate<nstate; istate++) {
           for (int jstate=0; jstate<nstate; jstate++) {
               density_matrix[istate][jstate][0] += 0.5*(positions_map[0][istate] + eye * momenta_map[0][istate])*(positions_map[1][jstate] - eye * momenta_map[1][jstate]) * initial_weight /
                       static_cast<double>(ntraj);
           }
       }
-    //      std::cout << "pos " << positions_map[0][0] << "\tmom " << momenta_map[0][0] << "i " << eye.real() << '\t' << eye.imag() << "\n";
 
+      for (int ibath=0; ibath<nbath; ibath++) {
 
+          for (int iosc = 0; iosc < nosc; iosc++) {
+              // Loop over electron steps
+              //force[ibath][iosc] = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][ibath], 2) + pow(momenta_map[0][ibath], 2) + pow(positions_map[1][ibath], 2) +
+              //                                            pow(momenta_map[1][ibath], 2)) + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
+              force[ibath][iosc] = -(c[iosc] * (pow(positions_map[0][ibath], 2) + pow(momenta_map[0][ibath], 2) + pow(positions_map[1][ibath], 2) +
+                                                pow(momenta_map[1][ibath], 2)) + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
 
-    for (int iosc = 0; iosc < nosc; iosc++) {
-          // Loop over electron steps
-          force[iosc] = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) -
-                                           pow(positions_map[0][1], 2) -
-                                           pow(momenta_map[0][1], 2) + pow(positions_map[1][0], 2) +
-                                           pow(momenta_map[1][0], 2) - pow(positions_map[1][1], 2) -
-                                           pow(momenta_map[1][1], 2)) +
-                          (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
-
-    }
-
-    for (int istep = 0; istep < nsteps; istep++) {
-
-      for (int iosc = 0; iosc < nosc; iosc++) {
-          momenta_bath[ibath][iosc] += 0.5 * force[iosc] * dt;
-          positions_bath[ibath][iosc] += momenta_bath[ibath][iosc] * dt;
-      }
-
-      for (int i = 0; i < nstate; i++) {
-          for (int j = 0; j < nstate; j++) {
-              hamiltonian[i][j] = h_sys[i][j];
           }
       }
 
-      for (int iosc = 0; iosc < nosc; iosc++) {
-          hamiltonian[0][0] += c[iosc] * positions_bath[ibath][iosc];
-          hamiltonian[1][1] += -c[iosc] * positions_bath[ibath][iosc];
-      }
+      for (int istep = 0; istep < nsteps; istep++) {
 
-      propagate(positions_map, momenta_map, hamiltonian, dt_little, 0);
-      propagate(positions_map, momenta_map, hamiltonian, dt_little, 1);
+          for (int ibath=0; ibath<nbath; ibath++) {
+              for (int iosc = 0; iosc < nosc; iosc++) {
+                  momenta_bath[ibath][iosc] += 0.5 * force[ibath][iosc] * dt;
+                  positions_bath[ibath][iosc] += momenta_bath[ibath][iosc] * dt;
+              }
+          }
+
+          for (int i = 0; i < nstate; i++) {
+              for (int j = 0; j < nstate; j++) {
+                  hamiltonian[i][j] = h_sys[i][j];
+              }
+          }
+
+          for (int iosc = 0; iosc < nosc; iosc++) {
+              hamiltonian[0][0] += c[iosc] * positions_bath[0][iosc];
+              hamiltonian[1][1] += -c[iosc] * positions_bath[1][iosc];
+          }
+
+          propagate(positions_map, momenta_map, hamiltonian, dt_little, 0);
+          propagate(positions_map, momenta_map, hamiltonian, dt_little, 1);
+
+          for (int istate = 0; istate < nstate; istate++) {
+              for (int jstate = 0; jstate < nstate; jstate++) {
+                  density_matrix[istate][jstate][istep + 1] +=
+                          0.5 * (positions_map[0][istate] + eye * momenta_map[0][istate]) *
+                          (positions_map[1][jstate] - eye * momenta_map[1][jstate]) * initial_weight /
+                          static_cast<double>(ntraj);
+              }
+          }
+
+          for (int ibath=0; ibath<nbath; ibath++) {
+
+              for (int iosc = 0; iosc < nosc; iosc++) {
+                  // Loop over electron steps
+                  // force[ibath][iosc] = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][ibath], 2) + pow(momenta_map[0][ibath], 2) + pow(positions_map[1][ibath], 2) +
+                  //                                            pow(momenta_map[1][ibath], 2)) + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
+                  force[ibath][iosc] = -(c[iosc] * (pow(positions_map[0][ibath], 2) + pow(momenta_map[0][ibath], 2) + pow(positions_map[1][ibath], 2) +
+                                                                pow(momenta_map[1][ibath], 2)) + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
+
+              }
+          }
+      }
+  }
+
+
+  std::complex<double> global_sum[nstate][nstate][nsteps+1][2];
+  std::complex<double> nproc(num_procs, 0.0);
+  double dens_real[nstate][nstate][nsteps+1];
+  double dens_imag[nstate][nstate][nsteps+1];
+
+
+  for (int itime=0; itime<nsteps+1; itime++) {
+      for (int istate=0; istate<nstate; istate++){
+          for (int jstate=0; jstate<nstate; jstate++) {
+                dens_real[istate][jstate][itime] = density_matrix[istate][jstate][itime].real();
+                dens_imag[istate][jstate][itime] = density_matrix[istate][jstate][itime].imag();
+                if (itime == 0 && istate == 0 && jstate <=10){
+                    std::cout << dens_real[istate][jstate][itime] << "\t" << dens_imag[istate][jstate][itime] << "\n";
+                }
+          }
+      }
+  }
+
+  for (int itime=0; itime<nsteps+1; itime++) {
+      for (int istate=0; istate<nstate; istate++){
+          for (int jstate=0; jstate<nstate; jstate++) {
+              MPI_Reduce(&dens_real[istate][jstate][itime], &global_sum[istate][jstate][itime][0], nsteps+1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+              MPI_Reduce(&dens_imag[istate][jstate][itime], &global_sum[istate][jstate][itime][1], nsteps+1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+              global_sum[istate][jstate][itime][0] / nproc;
+              global_sum[istate][jstate][itime][1] / nproc;
+          }
+      }
+  }
+
+  if (my_pe == 0) {
+
+      std::ofstream outfile;
+      std::stringstream filename;
 
       for (int istate = 0; istate < nstate; istate++) {
           for (int jstate = 0; jstate < nstate; jstate++) {
-              density_matrix[istate][jstate][istep + 1] +=
-                      0.5 * (positions_map[0][istate] + eye * momenta_map[0][istate]) *
-                      (positions_map[1][jstate] - eye * momenta_map[1][jstate]) * initial_weight /
-                      static_cast<double>(ntraj);
+              filename << "pldm." << istate + 1 << "-" << jstate + 1;
+              outfile.open(filename.str());
 
-
+              for (int itime = 0; itime < (nsteps + 1); itime++) {
+                  outfile << itime * dt / fs2AtomicTime << '\t' << dens_real[istate][jstate][itime] << '\t'
+                          << dens_imag[istate][jstate][itime] << '\n';
+              }
+              filename.str("");
+              outfile.close();
           }
       }
-      //std::cout << initial_weight << "\n";
-
-      for (int iosc = 0; iosc < nosc; iosc++) {
-          force[iosc] = -0.5 * (0.5 * c[iosc] * (pow(positions_map[0][0], 2) + pow(momenta_map[0][0], 2) -
-                                                 pow(positions_map[0][1], 2) - pow(momenta_map[0][1], 2)
-                                                 + pow(positions_map[1][0], 2) + pow(momenta_map[1][0], 2) -
-                                                 pow(positions_map[1][1], 2) - pow(momenta_map[1][1], 2))
-                                + (2 * pow(omega[iosc], 2) * positions_bath[ibath][iosc]));
-
-          momenta_bath[ibath][iosc] += 0.5 * force[iosc] * dt;
-        }
-      }
-    }
   }
-
-
-  std::ofstream outfile;
-  std::stringstream filename;
-
-  for (int istate=0; istate<nstate; istate++) {
-      for (int jstate=0; jstate<nstate; jstate++) {
-          filename << "pldm." << istate+1 << "-" << jstate+1;
-          outfile.open(filename.str());
-
-          for (int itime=0; itime<(nsteps+1); itime++) {
-              outfile << itime*dt/fs2AtomicTime << '\t' << density_matrix[istate][jstate][itime].real() << '\t' << density_matrix[istate][jstate][itime].imag() << '\n';
-          }
-          filename.str("");
-          outfile.close();
-      }
-  }
-
 
   MPI_Finalize();
-  outfile.close();
   return 0;
 }
 
